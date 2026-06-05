@@ -26,6 +26,7 @@ def ingest_uploaded_files(pdf_paths):
         except Exception as e:
             st.warning(f"Skipped {os.path.basename(path)}: could not read file")
             continue
+
     client = chromadb.PersistentClient(path=CHROMA_PATH)
     try:
         client.delete_collection("research_papers")
@@ -45,6 +46,38 @@ def ingest_uploaded_files(pdf_paths):
             ids=[f"chunk_{i}"]
         )
     return collection, len(all_chunks)
+
+
+def rewrite_query(gemini, original_query):
+    rewrite_prompt = f"""You are a search query optimizer for academic papers.
+Rewrite the following question into a better search query that will find 
+relevant chunks in research papers. Make it more specific with technical terms.
+Return ONLY the rewritten query, nothing else.
+
+Original question: {original_query}
+Rewritten query:"""
+    response = gemini.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=rewrite_prompt
+    )
+    return response.text.strip()
+
+
+def evaluate_retrieval(gemini, query, chunks):
+    relevant = 0
+    for chunk in chunks:
+        eval_prompt = f"""Is the following text chunk relevant to answering this question?
+Question: {query}
+Chunk: {chunk[:300]}
+Answer with ONLY 'yes' or 'no'."""
+        response = gemini.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=eval_prompt
+        )
+        if "yes" in response.text.strip().lower():
+            relevant += 1
+    return relevant, len(chunks)
+
 
 # Page setup
 st.set_page_config(page_title="Research Literature Assistant", page_icon="🔬")
@@ -80,7 +113,6 @@ if "collection" not in st.session_state:
 # Re-ingest only if files changed
 if file_names != st.session_state.loaded_files:
     with st.spinner(f"Processing {len(uploaded_files)} paper(s)..."):
-        # Save uploaded files to temp directory
         temp_dir = tempfile.mkdtemp()
         pdf_paths = []
         for uploaded_file in uploaded_files:
@@ -105,7 +137,7 @@ except Exception as e:
     st.error(f"Gemini connection error: {e}")
     st.stop()
 
-# Show loaded papers
+# Show loaded papers in sidebar
 st.sidebar.markdown("**Loaded papers:**")
 for name in file_names:
     st.sidebar.markdown(f"- {name}")
@@ -126,13 +158,19 @@ if prompt := st.chat_input("Ask a question across your papers..."):
     with st.chat_message("assistant"):
         with st.spinner("Searching across papers..."):
             try:
+                # Step 1 — Rewrite query
+                rewritten = rewrite_query(gemini, prompt)
+                st.caption(f"🔍 Search query: *{rewritten}*")
+
+                # Step 2 — Retrieve chunks
                 results = collection.query(
-                    query_texts=[prompt],
+                    query_texts=[rewritten],
                     n_results=5
                 )
                 context = "\n\n".join(results['documents'][0])
                 sources = results['metadatas'][0]
 
+                # Step 3 — Generate answer
                 full_prompt = f"""You are a research assistant helping with literature surveys.
 Answer based only on the context below from research papers.
 If the answer is not in the context, say so clearly.
@@ -143,7 +181,6 @@ Context:
 
 Question: {prompt}
 Answer:"""
-
                 response = gemini.models.generate_content(
                     model="gemini-2.5-flash",
                     contents=full_prompt
@@ -151,7 +188,14 @@ Answer:"""
                 answer = response.text
                 st.markdown(answer)
 
-                # Show citations
+                # Step 4 — Retrieval evaluation
+                relevant, total = evaluate_retrieval(
+                    gemini, prompt, results['documents'][0]
+                )
+                precision = round((relevant / total) * 100)
+                st.markdown(f"**📊 Retrieval Quality:** {relevant}/{total} chunks relevant — {precision}%")
+
+                # Step 5 — Citations
                 st.markdown("---")
                 st.markdown("**📄 Citations:**")
                 seen = set()
