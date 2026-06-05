@@ -67,7 +67,7 @@ Recent conversation (for context):
 Original question: {original_query}
 Rewritten query:"""
     response = gemini.models.generate_content(
-        model="gemini-2.5-flash",
+       model="gemini-2.0-flash-lite",
         contents=rewrite_prompt
     )
     return response.text.strip()
@@ -81,8 +81,8 @@ Question: {query}
 Chunk: {chunk[:300]}
 Answer with ONLY 'yes' or 'no'."""
         response = gemini.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=eval_prompt
+            model="gemini-2.0-flash-lite",
+            contents=rewrite_prompt
         )
         if "yes" in response.text.strip().lower():
             relevant += 1
@@ -212,7 +212,7 @@ if prompt := st.chat_input("Ask a question across your papers..."):
                     prompt
                 )
                 response = gemini.models.generate_content(
-                    model="gemini-2.5-flash",
+                    model="gemini-2.0-flash-lite",
                     contents=full_prompt
                 )
                 answer = response.text
