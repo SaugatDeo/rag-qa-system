@@ -3,7 +3,7 @@ import streamlit as st
 import chromadb
 from chromadb.utils.embedding_functions import DefaultEmbeddingFunction
 from google import genai
-from langchain_community.document_loaders import PyPDFDirectoryLoader
+from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 import tempfile
 import shutil
@@ -11,7 +11,6 @@ import shutil
 CHROMA_PATH = "chroma_db"
 
 def ingest_uploaded_files(pdf_paths):
-    from langchain_community.document_loaders import PyPDFLoader
     all_chunks = []
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=1000,
@@ -48,11 +47,22 @@ def ingest_uploaded_files(pdf_paths):
     return collection, len(all_chunks)
 
 
-def rewrite_query(gemini, original_query):
+def rewrite_query(gemini, original_query, chat_history):
+    # Pass recent history so rewriter understands follow-up context
+    history_text = ""
+    if chat_history:
+        recent = chat_history[-4:]  # last 2 turns (user + assistant each)
+        history_text = "\n".join(
+            f"{m['role'].capitalize()}: {m['content'][:200]}" for m in recent
+        )
+
     rewrite_prompt = f"""You are a search query optimizer for academic papers.
 Rewrite the following question into a better search query that will find 
 relevant chunks in research papers. Make it more specific with technical terms.
 Return ONLY the rewritten query, nothing else.
+
+Recent conversation (for context):
+{history_text}
 
 Original question: {original_query}
 Rewritten query:"""
@@ -79,12 +89,38 @@ Answer with ONLY 'yes' or 'no'."""
     return relevant, len(chunks)
 
 
-# Page setup
+def build_prompt_with_history(context, chat_history, current_question):
+    # Format last 6 messages (3 turns) as conversation history
+    history_text = ""
+    if chat_history:
+        recent = chat_history[-6:]
+        history_text = "\n".join(
+            f"{m['role'].capitalize()}: {m['content'][:300]}" for m in recent
+        )
+
+    prompt = f"""You are a research assistant helping with literature surveys.
+Answer based only on the context below from research papers.
+If the answer is not in the context, say so clearly.
+Be specific and cite which paper the information comes from when possible.
+Use the conversation history to understand follow-up questions and references like "it", "they", "this method" etc.
+
+Context from papers:
+{context}
+
+Conversation history:
+{history_text}
+
+Current question: {current_question}
+Answer:"""
+    return prompt
+
+
+# ── Page setup ──────────────────────────────────────────────────────────────
 st.set_page_config(page_title="Research Literature Assistant", page_icon="🔬")
 st.title("🔬 Research Literature Assistant")
 st.markdown("Upload your research papers and ask questions across all of them.")
 
-# Sidebar
+# ── Sidebar ──────────────────────────────────────────────────────────────────
 api_key = st.sidebar.text_input("Gemini API Key", type="password")
 st.sidebar.markdown("---")
 st.sidebar.markdown("### 📄 Upload Papers")
@@ -102,7 +138,7 @@ if not uploaded_files:
     st.info("👈 Upload one or more PDF research papers in the sidebar to begin")
     st.stop()
 
-# Track which files are loaded
+# ── Ingestion ────────────────────────────────────────────────────────────────
 file_names = sorted([f.name for f in uploaded_files])
 
 if "loaded_files" not in st.session_state:
@@ -110,7 +146,6 @@ if "loaded_files" not in st.session_state:
 if "collection" not in st.session_state:
     st.session_state.collection = None
 
-# Re-ingest only if files changed
 if file_names != st.session_state.loaded_files:
     with st.spinner(f"Processing {len(uploaded_files)} paper(s)..."):
         temp_dir = tempfile.mkdtemp()
@@ -130,19 +165,19 @@ if file_names != st.session_state.loaded_files:
 
 collection = st.session_state.collection
 
-# Connect Gemini
+# ── Gemini connection ────────────────────────────────────────────────────────
 try:
     gemini = genai.Client(api_key=api_key)
 except Exception as e:
     st.error(f"Gemini connection error: {e}")
     st.stop()
 
-# Show loaded papers in sidebar
+# ── Loaded papers list ───────────────────────────────────────────────────────
 st.sidebar.markdown("**Loaded papers:**")
 for name in file_names:
     st.sidebar.markdown(f"- {name}")
 
-# Chat interface
+# ── Chat interface ───────────────────────────────────────────────────────────
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
@@ -158,8 +193,8 @@ if prompt := st.chat_input("Ask a question across your papers..."):
     with st.chat_message("assistant"):
         with st.spinner("Searching across papers..."):
             try:
-                # Step 1 — Rewrite query
-                rewritten = rewrite_query(gemini, prompt)
+                # Step 1 — Rewrite query (now history-aware)
+                rewritten = rewrite_query(gemini, prompt, st.session_state.messages[:-1])
                 st.caption(f"🔍 Search query: *{rewritten}*")
 
                 # Step 2 — Retrieve chunks
@@ -170,17 +205,12 @@ if prompt := st.chat_input("Ask a question across your papers..."):
                 context = "\n\n".join(results['documents'][0])
                 sources = results['metadatas'][0]
 
-                # Step 3 — Generate answer
-                full_prompt = f"""You are a research assistant helping with literature surveys.
-Answer based only on the context below from research papers.
-If the answer is not in the context, say so clearly.
-Be specific and cite which paper the information comes from when possible.
-
-Context:
-{context}
-
-Question: {prompt}
-Answer:"""
+                # Step 3 — Generate answer (now with conversation history)
+                full_prompt = build_prompt_with_history(
+                    context,
+                    st.session_state.messages[:-1],  # exclude current question
+                    prompt
+                )
                 response = gemini.models.generate_content(
                     model="gemini-2.5-flash",
                     contents=full_prompt
