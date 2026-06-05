@@ -6,3 +6,4 @@ pypdf
 streamlit
 python-dotenv
 google-genai
+langchain-core
