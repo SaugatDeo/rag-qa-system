@@ -48,10 +48,9 @@ def ingest_uploaded_files(pdf_paths):
 
 
 def rewrite_query(gemini, original_query, chat_history):
-    # Pass recent history so rewriter understands follow-up context
     history_text = ""
     if chat_history:
-        recent = chat_history[-4:]  # last 2 turns (user + assistant each)
+        recent = chat_history[-4:]
         history_text = "\n".join(
             f"{m['role'].capitalize()}: {m['content'][:200]}" for m in recent
         )
@@ -67,7 +66,7 @@ Recent conversation (for context):
 Original question: {original_query}
 Rewritten query:"""
     response = gemini.models.generate_content(
-       model="gemini-2.0-flash-lite",
+        model="gemini-1.5-flash",
         contents=rewrite_prompt
     )
     return response.text.strip()
@@ -81,8 +80,8 @@ Question: {query}
 Chunk: {chunk[:300]}
 Answer with ONLY 'yes' or 'no'."""
         response = gemini.models.generate_content(
-            model="gemini-2.0-flash-lite",
-            contents=rewrite_prompt
+            model="gemini-1.5-flash",
+            contents=eval_prompt
         )
         if "yes" in response.text.strip().lower():
             relevant += 1
@@ -90,7 +89,6 @@ Answer with ONLY 'yes' or 'no'."""
 
 
 def build_prompt_with_history(context, chat_history, current_question):
-    # Format last 6 messages (3 turns) as conversation history
     history_text = ""
     if chat_history:
         recent = chat_history[-6:]
@@ -193,26 +191,26 @@ if prompt := st.chat_input("Ask a question across your papers..."):
     with st.chat_message("assistant"):
         with st.spinner("Searching across papers..."):
             try:
-                # Step 1 — Rewrite query (now history-aware)
+                # Step 1 — Rewrite query (history-aware)
                 rewritten = rewrite_query(gemini, prompt, st.session_state.messages[:-1])
                 st.caption(f"🔍 Search query: *{rewritten}*")
 
                 # Step 2 — Retrieve chunks
                 results = collection.query(
                     query_texts=[rewritten],
-                    n_results=5
+                    n_results=3
                 )
                 context = "\n\n".join(results['documents'][0])
                 sources = results['metadatas'][0]
 
-                # Step 3 — Generate answer (now with conversation history)
+                # Step 3 — Generate answer (with conversation history)
                 full_prompt = build_prompt_with_history(
                     context,
-                    st.session_state.messages[:-1],  # exclude current question
+                    st.session_state.messages[:-1],
                     prompt
                 )
                 response = gemini.models.generate_content(
-                    model="gemini-2.0-flash-lite",
+                    model="gemini-1.5-flash",
                     contents=full_prompt
                 )
                 answer = response.text
