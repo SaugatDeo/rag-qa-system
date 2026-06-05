@@ -39,7 +39,7 @@ def ingest_uploaded_files(pdf_paths):
 
     for i, chunk in enumerate(all_chunks):
         collection.add(
-            documents=[chunk.page_content],
+            documents=[chunk.page_content.encode('ascii', 'ignore').decode('ascii')],
             metadatas=[{"source": str(chunk.metadata.get("source", "")),
                         "page": int(chunk.metadata.get("page", 0))}],
             ids=[f"chunk_{i}"]
